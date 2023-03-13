@@ -1,14 +1,19 @@
-# Welcome to your CDK TypeScript project
+# AAX to RSS 
 
-This is a blank project for CDK development with TypeScript.
+Hat tip to (https://github.com/KrumpetPirate/AAXtoMP3)[AAXtoMP3], it allowed me to see what i needed to do to allow ffmpeg to work.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+** Work in Progress **
 
-## Useful commands
+When finished this should create a private RSS podcast feed for each AAX file added.
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `cdk deploy`      deploy this stack to your default AWS account/region
-* `cdk diff`        compare deployed stack with current state
-* `cdk synth`       emits the synthesized CloudFormation template
+Should allow for you to used a podcast client to listen to your audible books
+
+
+
+# Anti-Piracy Notice
+
+Note that this project does NOT ‘crack’ the DRM. It simply allows the user to use their own encryption key (fetched from Audible servers) to decrypt the audiobook in the same manner that the official audiobook playing software does.
+
+Please only use this application for gaining full access to your own audiobooks for archiving/conversion/convenience. DeDRMed audiobooks should not be uploaded to open servers, torrents, or other methods of mass distribution. No help will be given to people doing such things. Authors, retailers, and publishers all need to make a living, so that they can continue to produce audiobooks for us to hear, and enjoy. Don’t be a parasite.
+
+This blurb is borrowed from (https://github.com/KrumpetPirate/AAXtoMP3)[AAXtoMP3] who got it from the https://apprenticealf.wordpress.com/ page.
