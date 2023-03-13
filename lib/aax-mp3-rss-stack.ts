@@ -52,7 +52,8 @@ export class AaxMp3RssStack extends Stack {
 
     const splitQueue = new Queue(this, "Split", {
       visibilityTimeout: Duration.minutes(17),
-      deadLetterQueue: { queue: splitDlq, maxReceiveCount: 2 },
+      deadLetterQueue: { queue: splitDlq, maxReceiveCount: 3 },
+      deliveryDelay: Duration.minutes(5),
     });
 
     const splitSub = new SqsSubscription(splitQueue, {
@@ -175,7 +176,7 @@ export class AaxMp3RssStack extends Stack {
       },
       layers: [ffmpegLayer],
     });
-    const splitSource = new SqsEventSource(splitQueue, { batchSize: 2 });
+    const splitSource = new SqsEventSource(splitQueue, { batchSize: 1 });
     split.addEventSource(splitSource);
   }
 }

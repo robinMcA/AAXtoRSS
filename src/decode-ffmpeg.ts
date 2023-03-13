@@ -6,17 +6,14 @@ import { readFile, writeFile } from "fs/promises";
 import { PutObjectCommandInput } from "@aws-sdk/client-s3/dist-types/commands/PutObjectCommand";
 import { ProbeChapter, ProbeOut } from "./types";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { v4 } from "uuid";
 import {
   DynamoDBDocumentClient,
   PutCommand,
   ScanCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import {
-  SendMessageBatchCommand,
-  SendMessageBatchCommandOutput,
-  SQSClient,
-} from "@aws-sdk/client-sqs";
+import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import chunk from "lodash.chunk";
 import { SendMessageBatchRequestEntry } from "@aws-sdk/client-sqs/dist-types/models/models_0";
 
@@ -39,25 +36,25 @@ const marshallOptions = {
 
 const sendToQueueInChunks =
   (client: SQSClient) =>
-  (
-    input: ProbeChapter[],
-    meta?: object
-  ): Promise<Array<SendMessageBatchCommandOutput>> => {
+  (input: ProbeChapter[], meta?: object): Promise<void> => {
     const entries: SendMessageBatchRequestEntry[] = input.map((chap) => ({
       MessageBody: JSON.stringify({ chapter: chap, ...meta }),
-      Id: chap.id.toString(),
+      Id: v4(),
     }));
-    return Promise.all(
-      chunk(entries, 8)
-        .map(
-          (entry) =>
-            new SendMessageBatchCommand({
-              QueueUrl: process.env.SPLIT_QUEUE,
-              Entries: entry,
-            })
-        )
-        .map((com) => client.send(com))
-    );
+    return chunk(entries, 8)
+      .map(
+        (entry) =>
+          new SendMessageBatchCommand({
+            QueueUrl: process.env.SPLIT_QUEUE,
+            Entries: entry,
+          })
+      )
+      .reduce(async (acc, com) => {
+        await acc;
+        console.log(JSON.stringify(com.input.Entries, null, 2));
+
+        await client.send(com);
+      }, Promise.resolve());
   };
 
 const unmarshallOptions = {
@@ -125,7 +122,7 @@ export const handler: SQSHandler = async (event) => {
   const srcKey = srcKeyFull.replace(`${user}/`, "");
   const params = {
     Bucket: srcBucket,
-    Key: srcKey,
+    Key: srcKeyFull,
   };
 
   console.log(params);
@@ -142,11 +139,11 @@ export const handler: SQSHandler = async (event) => {
   await execFfmpeg("/tmp/infile.aax", "/tmp/outFile");
 
   const { chapters, format } = await execFfProbe("/tmp/outFile.mp4");
-  const outDirS3 = format?.tags?.title?.replace(/\s+/g, "_") || srcKey;
+  const outDirS3 =
+    format?.tags?.title?.replace(/\s+/g, "_").replace(/[\(\)]/g, "__") ||
+    srcKey;
   const outKey = `${encodeURI(outDirS3)}/${srcKey}.mp4`;
-  const sendToSqs = sendToQueueInChunks(sqsClient)(chapters, {
-    outFile: { bucket: outBucket, key: outKey },
-  });
+
   await ddbDocClient.send(
     new PutCommand({
       TableName: process.env.DYNAMO_NAME,
@@ -173,8 +170,10 @@ export const handler: SQSHandler = async (event) => {
     Body: await readFile("/tmp/outFile.mp4"),
     ContentType: "image",
   };
-  await sendToSqs;
   await s3.putObject(destparams);
+  await sendToQueueInChunks(sqsClient)(chapters, {
+    outFile: { bucket: outBucket, key: outKey },
+  });
 };
 
 export default handler;

@@ -62,7 +62,8 @@ export const handler: SQSHandler = async (event) => {
     const localInfile = tempFilePointers.find(
       (temp) => temp.s3.Key === curr.outFile.key
     );
-
+    console.log(`curr: ${JSON.stringify(curr, null, 2)}`);
+    console.log(`localInfile: ${JSON.stringify(localInfile, null, 2)}`);
     const localDir = `/tmp/${localInfile!.s3.Key.replace(".aax.mp4", "")}`;
     const dirExists = existsSync(localDir);
     if (!dirExists) {
@@ -78,14 +79,16 @@ export const handler: SQSHandler = async (event) => {
       localDir,
       fileName
     );
-
+    const file = await readFile(`${localDir}/${fileName}.mp4`);
     const destparams: PutObjectCommandInput = {
       Bucket: outBucket,
       Key: `${localInfile!.s3.Key.replace(".aax.mp4", "")}/${fileName}.mp4`,
-      Body: await readFile(`${localDir}/${fileName}.mp4`),
+      Body: file,
       ContentType: "audio",
     };
-
+    console.log(
+      `done: [${localInfile!.s3.Key.replace(".aax.mp4", "")}/${fileName}.mp4}]`
+    );
     await s3.putObject(destparams);
   }, Promise.resolve());
 };
