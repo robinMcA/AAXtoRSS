@@ -1,6 +1,6 @@
 # AAX to RSS 
 
-Hat tip to (https://github.com/KrumpetPirate/AAXtoMP3)[AAXtoMP3], it allowed me to see what i needed to do to allow ffmpeg to work.
+Hat tip to [https://github.com/KrumpetPirate/AAXtoMP3](AAXtoMP3), it allowed me to see what i needed to do to allow ffmpeg to work.
 
 ** Work in Progress **
 
