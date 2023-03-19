@@ -22,17 +22,7 @@ const outBucket = process.env.OUT_BUCKET || "out";
 
 const s3 = new S3({ region: process.env.AWS_REGION });
 
-const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
 const sqsClient = new SQSClient({ region: process.env.AWS_REGION });
-
-const marshallOptions = {
-  // Whether to automatically convert empty strings, blobs, and sets to `null`.
-  convertEmptyValues: false, // false, by default.
-  // Whether to remove undefined values while marshalling.
-  removeUndefinedValues: true, // false, by default.
-  // Whether to convert typeof object to map attribute.
-  convertClassInstanceToMap: false, // false, by default.
-};
 
 const sendToQueueInChunks =
   (client: SQSClient) =>
@@ -57,6 +47,17 @@ const sendToQueueInChunks =
       }, Promise.resolve());
   };
 
+const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
+
+const marshallOptions = {
+  // Whether to automatically convert empty strings, blobs, and sets to `null`.
+  convertEmptyValues: false, // false, by default.
+  // Whether to remove undefined values while marshalling.
+  removeUndefinedValues: true, // false, by default.
+  // Whether to convert typeof object to map attribute.
+  convertClassInstanceToMap: false, // false, by default.
+};
+
 const unmarshallOptions = {
   // Whether to return numbers as a string instead of converting them to native JavaScript numbers.
   wrapNumbers: false, // false, by default.
@@ -78,7 +79,7 @@ const execFfProbe = async (inPath: string) =>
 
 const execFfmpeg = async (inPath: string, outPath: string) => {
   const { stderr, stdout } = await exec(
-    `/opt/ffmpeg -activation_bytes ${process.env.MAGIC_STRING} -i ${inPath} -vn -c:a copy ${outPath}.mp4`
+    `/opt/ffmpeg -y -activation_bytes ${process.env.MAGIC_STRING} -i ${inPath} -vn -c:a copy ${outPath}.mp4`
   ).catch(async (e) => {
     const destparams: PutObjectCommandInput = {
       Bucket: outBucket,
@@ -126,8 +127,8 @@ export const handler: SQSHandler = async (event) => {
   };
 
   console.log(params);
-
   const origimage = await s3.getObject(params);
+  console.log("got s3 obj");
 
   if (origimage.Body === undefined) throw new Error("No File");
 
@@ -135,20 +136,26 @@ export const handler: SQSHandler = async (event) => {
     "/tmp/infile.aax",
     await origimage.Body.transformToByteArray()
   );
+  console.log("written local");
 
   await execFfmpeg("/tmp/infile.aax", "/tmp/outFile");
+  console.log("finished ffmpeg");
 
   const { chapters, format } = await execFfProbe("/tmp/outFile.mp4");
+  console.log("finished probe");
+
+  const outSrcKey = srcKey.replace(/\s+/g, "_").replace(/[\(\)]/g, "__");
   const outDirS3 =
     format?.tags?.title?.replace(/\s+/g, "_").replace(/[\(\)]/g, "__") ||
-    srcKey;
-  const outKey = `${encodeURI(outDirS3)}/${srcKey}.mp4`;
+    outSrcKey;
+
+  const outKey = `${encodeURI(outDirS3)}/${outSrcKey}.mp4`;
 
   await ddbDocClient.send(
     new PutCommand({
       TableName: process.env.DYNAMO_NAME,
       Item: {
-        s3Key: srcKey,
+        s3Key: outKey,
         chapters,
         format,
         infile: { bucket: srcBucket, key: srcKey },
@@ -156,14 +163,17 @@ export const handler: SQSHandler = async (event) => {
       },
     })
   );
+  console.log("put dynamo");
+
   await ddbDocClient.send(
     new UpdateCommand({
       TableName: process.env.USER_DYNAMO,
       UpdateExpression: "ADD Books :b",
-      ExpressionAttributeValues: { ":b": new Set([srcKey]) },
+      ExpressionAttributeValues: { ":b": new Set([outSrcKey]) },
       Key: { user },
     })
   );
+  console.log("update dynamo");
   const destparams: PutObjectCommandInput = {
     Bucket: outBucket,
     Key: outKey,
@@ -171,9 +181,11 @@ export const handler: SQSHandler = async (event) => {
     ContentType: "image",
   };
   await s3.putObject(destparams);
+  console.log("put S3");
   await sendToQueueInChunks(sqsClient)(chapters, {
     outFile: { bucket: outBucket, key: outKey },
   });
+  console.log("queue");
 };
 
 export default handler;

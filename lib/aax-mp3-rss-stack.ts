@@ -53,7 +53,7 @@ export class AaxMp3RssStack extends Stack {
     const splitQueue = new Queue(this, "Split", {
       visibilityTimeout: Duration.minutes(17),
       deadLetterQueue: { queue: splitDlq, maxReceiveCount: 3 },
-      deliveryDelay: Duration.minutes(5),
+      deliveryDelay: Duration.minutes(1),
     });
 
     const splitSub = new SqsSubscription(splitQueue, {
@@ -128,10 +128,11 @@ export class AaxMp3RssStack extends Stack {
     });
 
     const transcode = new NodejsFunction(this, "transcode", {
-      memorySize: Size.gibibytes(6).toMebibytes(),
-      timeout: Duration.minutes(15),
+      memorySize: Size.gibibytes(5).toMebibytes(),
+      timeout: Duration.minutes(3),
       role: lambdaRole,
-      ephemeralStorageSize: Size.gibibytes(3),
+      reservedConcurrentExecutions: 1,
+      ephemeralStorageSize: Size.gibibytes(6),
       runtime: lambda.Runtime.NODEJS_18_X,
       handler: "handler",
       entry: path.join(__dirname, `/../src/decode-ffmpeg.ts`),
@@ -154,9 +155,10 @@ export class AaxMp3RssStack extends Stack {
     transcode.addEventSource(source);
 
     const split = new NodejsFunction(this, "split", {
-      memorySize: Size.gibibytes(6).toMebibytes(),
+      memorySize: Size.gibibytes(5).toMebibytes(),
       timeout: Duration.minutes(15),
       role: lambdaRole,
+      reservedConcurrentExecutions: 5,
       ephemeralStorageSize: Size.gibibytes(3),
       runtime: lambda.Runtime.NODEJS_18_X,
       handler: "handler",
@@ -176,7 +178,7 @@ export class AaxMp3RssStack extends Stack {
       },
       layers: [ffmpegLayer],
     });
-    const splitSource = new SqsEventSource(splitQueue, { batchSize: 1 });
+    const splitSource = new SqsEventSource(splitQueue, { batchSize: 4 });
     split.addEventSource(splitSource);
   }
 }
