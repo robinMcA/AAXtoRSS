@@ -8,19 +8,21 @@ import {
 } from "aws-cdk-lib/aws-certificatemanager";
 import {
   CloudFrontWebDistribution,
+  HttpVersion,
   OriginProtocolPolicy,
   ViewerCertificate,
+  ViewerProtocolPolicy,
 } from "aws-cdk-lib/aws-cloudfront";
 import { CloudFrontTarget } from "aws-cdk-lib/aws-route53-targets";
 
 const SiteData = {
-  domainName: process.env.DOMAIN_NAME || "example.com",
-  siteSubDomain: process.env.SUB_DOMAIN || "test",
+  domainName: process.env.DOMAIN_NAME || "aax-rss.net",
+  siteSubDomain: process.env.SUB_DOMAIN || "client",
 };
 
 export function staticWeb(stack: Stack) {
-  const zone = new HostedZone(stack, "Zone", {
-    zoneName: `${stack.stackName}-zone`,
+  const zone = HostedZone.fromLookup(stack, "zone", {
+    domainName: SiteData.domainName,
   });
 
   const siteDomain = SiteData.siteSubDomain + "." + SiteData.domainName;
@@ -48,11 +50,13 @@ export function staticWeb(stack: Stack) {
     "SiteDistribution",
     {
       viewerCertificate: ViewerCertificate.fromAcmCertificate(certificate),
+      httpVersion: HttpVersion.HTTP2_AND_3,
+      viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       originConfigs: [
         {
           customOriginSource: {
             domainName: webS3.bucketWebsiteDomainName,
-            originProtocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
+            originProtocolPolicy: OriginProtocolPolicy.HTTP_ONLY,
           },
           behaviors: [{ isDefaultBehavior: true }],
         },

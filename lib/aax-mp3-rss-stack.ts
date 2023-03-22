@@ -8,6 +8,7 @@ import { roles } from "./roles";
 import { s3Sub } from "./s3";
 import { dynamoSub } from "./dynamo";
 import { staticWeb } from "./web";
+import { cognito } from "./cognito";
 
 export class AaxMp3RssStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -34,5 +35,6 @@ export class AaxMp3RssStack extends Stack {
       outBucket,
     });
     staticWeb(this);
+    cognito(this);
   }
 }
