@@ -1,15 +1,40 @@
-import React from "react";
+import React, { useCallback, useContext, useEffect, useState } from "react";
 import logo from "./logo.svg";
 import "./App.css";
-import { Amplify } from "aws-amplify";
-import { withAuthenticator } from "@aws-amplify/ui-react";
 import "@aws-amplify/ui-react/styles.css";
-import awsExports from "./aws-exports";
-import { WithAuthenticatorProps } from "@aws-amplify/ui-react/dist/types/components/Authenticator/withAuthenticator";
+import { User } from "./contexts";
+import axios from "axios";
+import { useDropzone } from "react-dropzone";
+import { Auth } from "aws-amplify";
 
-Amplify.configure(awsExports);
+const onUploadProgress =
+  (setter: (input: number) => void) => (progressEvent: any) =>
+    setter(Math.round((progressEvent.loaded * 100) / progressEvent.total));
 
-function App({ signOut, user }: WithAuthenticatorProps) {
+function App() {
+  const { signOut, user } = useContext(User);
+  const [progress, setProgress] = useState(0);
+  const [idToken, setIdToken] = useState(0);
+
+  useEffect(() => {
+    const effect = async () => {
+      (await Auth.currentSession()).getIdToken().getJwtToken();
+    };
+  }, [user]);
+
+  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    const file = acceptedFiles[0];
+    const presignedUrl = await axios.get("https://your-api.com/presigned-url", {
+      params: { filename: file.name },
+    });
+
+    await axios.put(presignedUrl.data.url, file, {
+      onUploadProgress: onUploadProgress(setProgress),
+    });
+  }, []);
+
+  const { getRootProps, getInputProps } = useDropzone({ onDrop });
+
   return (
     <div className="App">
       <header className="App-header">
@@ -28,8 +53,15 @@ function App({ signOut, user }: WithAuthenticatorProps) {
           Learn React
         </a>
       </header>
+      <div>
+        <div {...getRootProps()}>
+          <input {...getInputProps()} />
+          <p>Drag and drop your files here or click to select files</p>
+          <progress value={progress} max="100" />
+        </div>
+      </div>
     </div>
   );
 }
 
-export default withAuthenticator(App);
+export default App;

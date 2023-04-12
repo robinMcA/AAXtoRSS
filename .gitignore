@@ -9,3 +9,4 @@ cdk.out
 .env
 .envrc
 .idea
+cdk.context.json

@@ -34,7 +34,7 @@ export class AaxMp3RssStack extends Stack {
       table,
       outBucket,
     });
-    staticWeb(this);
-    cognito(this);
+    const { cognito: userPool, client: cogClient } = cognito(this);
+    staticWeb(this, lambdaRole, { inBucket: aaxBucket, userPool, cogClient });
   }
 }

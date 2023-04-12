@@ -1,4 +1,4 @@
-import { CfnOutput, RemovalPolicy, Stack } from "aws-cdk-lib";
+import { CfnOutput, Duration, RemovalPolicy, Size, Stack } from "aws-cdk-lib";
 import { Bucket } from "aws-cdk-lib/aws-s3";
 import { BucketDeployment, Source } from "aws-cdk-lib/aws-s3-deployment";
 import { ARecord, HostedZone, RecordTarget } from "aws-cdk-lib/aws-route53";
@@ -10,17 +10,48 @@ import {
   CloudFrontWebDistribution,
   HttpVersion,
   OriginProtocolPolicy,
+  SecurityPolicyProtocol,
   ViewerCertificate,
   ViewerProtocolPolicy,
 } from "aws-cdk-lib/aws-cloudfront";
-import { CloudFrontTarget } from "aws-cdk-lib/aws-route53-targets";
+import {
+  ApiGatewayv2DomainProperties,
+  CloudFrontTarget,
+} from "aws-cdk-lib/aws-route53-targets";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import path from "path";
+import { Role } from "aws-cdk-lib/aws-iam";
+import {
+  CfnApi,
+  CfnApiMapping,
+  CfnAuthorizer,
+  CfnDomainName,
+  CfnIntegration,
+  CfnRoute,
+  CfnStage,
+} from "aws-cdk-lib/aws-apigatewayv2";
+import { IUserPool, UserPoolClient } from "aws-cdk-lib/aws-cognito";
 
 const SiteData = {
   domainName: process.env.DOMAIN_NAME || "aax-rss.net",
   siteSubDomain: process.env.SUB_DOMAIN || "client",
+  apiSubDomain: process.env.API_DOMAIN || "api",
 };
 
-export function staticWeb(stack: Stack) {
+export function staticWeb(
+  stack: Stack,
+  lambdaRole: Role,
+  {
+    inBucket,
+    userPool,
+    cogClient,
+  }: {
+    inBucket: Bucket;
+    userPool: IUserPool;
+    cogClient: UserPoolClient;
+  }
+) {
   const zone = HostedZone.fromLookup(stack, "zone", {
     domainName: SiteData.domainName,
   });
@@ -42,6 +73,11 @@ export function staticWeb(stack: Stack) {
     domainName: siteDomain,
     validation: CertificateValidation.fromDns(zone),
   });
+  // TLS certificate
+  const wild = new Certificate(stack, "WildCertificate", {
+    domainName: "*." + SiteData.domainName,
+    validation: CertificateValidation.fromDns(zone),
+  });
 
   new CfnOutput(stack, "Certificate", { value: certificate.certificateArn });
   // CloudFront distribution that provides HTTPS
@@ -49,7 +85,10 @@ export function staticWeb(stack: Stack) {
     stack,
     "SiteDistribution",
     {
-      viewerCertificate: ViewerCertificate.fromAcmCertificate(certificate),
+      viewerCertificate: ViewerCertificate.fromAcmCertificate(certificate, {
+        securityPolicy: SecurityPolicyProtocol.TLS_V1_2_2021,
+        aliases: [siteDomain],
+      }),
       httpVersion: HttpVersion.HTTP2_AND_3,
       viewerProtocolPolicy: ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       originConfigs: [
@@ -80,5 +119,85 @@ export function staticWeb(stack: Stack) {
     destinationBucket: webS3,
     distribution,
     distributionPaths: ["/*"],
+  });
+
+  const preSigned = new NodejsFunction(stack, "get-signed-url", {
+    memorySize: Size.mebibytes(256).toMebibytes(),
+    timeout: Duration.seconds(15),
+    role: lambdaRole,
+    reservedConcurrentExecutions: 1,
+    runtime: lambda.Runtime.NODEJS_18_X,
+    handler: "handler",
+    entry: path.join(__dirname, `/../src/get-signed-url.ts`),
+    bundling: {
+      minify: true,
+      externalModules: ["aws-sdk"],
+    },
+    environment: {
+      S3_BUCKET: inBucket.bucketName,
+    },
+  });
+  const dom = new CfnDomainName(stack, "custom-dom", {
+    domainName: `${SiteData.apiSubDomain}.${SiteData.domainName}`,
+    domainNameConfigurations: [{ certificateArn: wild.certificateArn }],
+  });
+
+  const httpApi = new CfnApi(stack, "HttpApi", {
+    name: "clientApi",
+    protocolType: "HTTP",
+  });
+
+  const stage = new CfnStage(stack, "deploy-stage", {
+    stageName: "deploy",
+    apiId: httpApi.attrApiId,
+    autoDeploy: true,
+  });
+  const mapping = new CfnApiMapping(stack, "dom-mapping", {
+    domainName: dom.domainName,
+    apiId: httpApi.attrApiId,
+    stage: stage.stageName,
+  });
+
+  mapping.addDependency(dom);
+
+  // Route53 alias record for the CloudFront distribution
+  const rec = new ARecord(stack, "ApiAliasRecord", {
+    recordName: SiteData.apiSubDomain,
+    target: RecordTarget.fromAlias(
+      new ApiGatewayv2DomainProperties(
+        dom.attrRegionalDomainName,
+        dom.attrRegionalHostedZoneId
+      )
+    ),
+    zone,
+  });
+
+  rec.node.addDependency(mapping);
+
+  const auth = new CfnAuthorizer(stack, "cog-auth", {
+    apiId: httpApi.attrApiId,
+    authorizerType: "JWT",
+    name: "cog-auth",
+    identitySource: ["$request.header.Authorization"],
+    jwtConfiguration: {
+      audience: [cogClient.userPoolClientId],
+      issuer: `https://cognito-idp.${stack.region}.amazonaws.com/${userPool.userPoolId}`,
+    },
+  });
+
+  const splitInt = new CfnIntegration(stack, "split-api-gw", {
+    apiId: httpApi.attrApiId,
+    integrationType: "AWS_PROXY",
+    payloadFormatVersion: "2.0",
+    integrationMethod: "POST",
+    integrationUri: preSigned.functionArn,
+    timeoutInMillis: 4000,
+  });
+  const route = new CfnRoute(stack, "split-api-route", {
+    apiId: httpApi.attrApiId,
+    routeKey: "GET /get-signed",
+    authorizerId: auth.attrAuthorizerId,
+    authorizationType: "JWT",
+    target: `integrations/${splitInt.ref}`,
   });
 }

@@ -2,8 +2,8 @@ import { CfnOutput, Stack } from "aws-cdk-lib";
 import { Mfa, UserPool } from "aws-cdk-lib/aws-cognito";
 
 export function cognito(stack: Stack) {
-  const cognito = new UserPool(stack, `${stack.stackName}-userPool`, {
-    userPoolName: "clint-pool",
+  const cognito = new UserPool(stack, `${stack.stackName}-client-pool`, {
+    userPoolName: "client-pool",
     selfSignUpEnabled: false,
     enableSmsRole: false,
     signInAliases: { username: true },
@@ -13,6 +13,8 @@ export function cognito(stack: Stack) {
     mfa: Mfa.OFF,
   });
 
+  const client = cognito.addClient("web-site");
+
   new CfnOutput(stack, "userPoolId", { value: cognito.userPoolId });
   new CfnOutput(stack, "userPoolProviderUrl", {
     value: cognito.userPoolProviderUrl,
@@ -21,5 +23,5 @@ export function cognito(stack: Stack) {
     value: cognito.userPoolProviderName,
   });
 
-  return { cognito };
+  return { cognito, client };
 }
