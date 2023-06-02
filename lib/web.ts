@@ -1,11 +1,8 @@
 import { CfnOutput, Duration, RemovalPolicy, Size, Stack } from "aws-cdk-lib";
-import { Bucket } from "aws-cdk-lib/aws-s3";
+import { BlockPublicAccess, Bucket } from "aws-cdk-lib/aws-s3";
 import { BucketDeployment, Source } from "aws-cdk-lib/aws-s3-deployment";
-import { ARecord, HostedZone, RecordTarget } from "aws-cdk-lib/aws-route53";
-import {
-  Certificate,
-  CertificateValidation,
-} from "aws-cdk-lib/aws-certificatemanager";
+import { ARecord, IHostedZone, RecordTarget } from "aws-cdk-lib/aws-route53";
+import { Certificate } from "aws-cdk-lib/aws-certificatemanager";
 import {
   CloudFrontWebDistribution,
   HttpVersion,
@@ -21,23 +18,25 @@ import {
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import path from "path";
-import { Role } from "aws-cdk-lib/aws-iam";
 import {
-  CfnApi,
-  CfnApiMapping,
-  CfnAuthorizer,
-  CfnDomainName,
-  CfnIntegration,
-  CfnRoute,
-  CfnStage,
-} from "aws-cdk-lib/aws-apigatewayv2";
+  Effect,
+  PolicyStatement,
+  Role,
+  ServicePrincipal,
+} from "aws-cdk-lib/aws-iam";
 import { IUserPool, UserPoolClient } from "aws-cdk-lib/aws-cognito";
-
-const SiteData = {
-  domainName: process.env.DOMAIN_NAME || "aax-rss.net",
-  siteSubDomain: process.env.SUB_DOMAIN || "client",
-  apiSubDomain: process.env.API_DOMAIN || "api",
-};
+import {
+  CorsHttpMethod,
+  DomainName,
+  HttpApi,
+  HttpMethod,
+  PayloadFormatVersion,
+} from "@aws-cdk/aws-apigatewayv2-alpha";
+import { HttpJwtAuthorizer } from "@aws-cdk/aws-apigatewayv2-authorizers-alpha";
+import { HttpLambdaIntegration } from "@aws-cdk/aws-apigatewayv2-integrations-alpha";
+import { Table } from "aws-cdk-lib/aws-dynamodb";
+import { SiteData, siteDomain } from "./aax-mp3-rss-stack";
+import { AnyPrincipal } from "aws-cdk-lib/aws-iam";
 
 export function staticWeb(
   stack: Stack,
@@ -46,46 +45,44 @@ export function staticWeb(
     inBucket,
     userPool,
     cogClient,
+    usersTable,
+    booksTable,
+    zone,
+    wild,
   }: {
     inBucket: Bucket;
     userPool: IUserPool;
     cogClient: UserPoolClient;
+    usersTable: Table;
+    booksTable: Table;
+    zone: IHostedZone;
+    wild: Certificate;
   }
 ) {
-  const zone = HostedZone.fromLookup(stack, "zone", {
-    domainName: SiteData.domainName,
-  });
-
-  const siteDomain = SiteData.siteSubDomain + "." + SiteData.domainName;
   new CfnOutput(stack, "Site", { value: "https://" + siteDomain });
 
   const webS3 = new Bucket(stack, "web", {
     bucketName: `${stack.stackName}-web`.toLowerCase(),
     websiteErrorDocument: "index.html",
     websiteIndexDocument: "index.html",
+    blockPublicAccess: new BlockPublicAccess({
+      ignorePublicAcls: false,
+      blockPublicAcls: false,
+      blockPublicPolicy: false,
+      restrictPublicBuckets: false,
+    }),
     publicReadAccess: true,
     removalPolicy: RemovalPolicy.DESTROY,
   });
-  new CfnOutput(stack, "WebBucket", { value: webS3.bucketName });
 
   // TLS certificate
-  const certificate = new Certificate(stack, "SiteCertificate", {
-    domainName: siteDomain,
-    validation: CertificateValidation.fromDns(zone),
-  });
-  // TLS certificate
-  const wild = new Certificate(stack, "WildCertificate", {
-    domainName: "*." + SiteData.domainName,
-    validation: CertificateValidation.fromDns(zone),
-  });
 
-  new CfnOutput(stack, "Certificate", { value: certificate.certificateArn });
   // CloudFront distribution that provides HTTPS
   const distribution = new CloudFrontWebDistribution(
     stack,
     "SiteDistribution",
     {
-      viewerCertificate: ViewerCertificate.fromAcmCertificate(certificate, {
+      viewerCertificate: ViewerCertificate.fromAcmCertificate(wild, {
         securityPolicy: SecurityPolicyProtocol.TLS_V1_2_2021,
         aliases: [siteDomain],
       }),
@@ -102,9 +99,6 @@ export function staticWeb(
       ],
     }
   );
-  new CfnOutput(stack, "DistributionId", {
-    value: distribution.distributionId,
-  });
 
   // Route53 alias record for the CloudFront distribution
   new ARecord(stack, "SiteAliasRecord", {
@@ -118,8 +112,52 @@ export function staticWeb(
     sources: [Source.asset("./client/build")],
     destinationBucket: webS3,
     distribution,
-    distributionPaths: ["/*"],
+    distributionPaths: ["/*", "/**/*"],
   });
+  webS3.addToResourcePolicy(
+    new PolicyStatement({
+      sid: "AllowCloudFrontServicedddPrincipalReadOnly",
+      effect: Effect.ALLOW,
+      principals: [new ServicePrincipal("cloudfront.amazonaws.com")],
+      actions: ["s3:GetObject"],
+      resources: [webS3.bucketArn + "/*"],
+    })
+  );
+  const dom = new DomainName(stack, "custom-dom", {
+    domainName: `${SiteData.apiSubDomain}.${SiteData.domainName}`,
+    certificate: wild,
+  });
+
+  const httpApi = new HttpApi(stack, "HttpApi", {
+    apiName: "clientApi",
+    description: "api for client",
+    defaultDomainMapping: { domainName: dom },
+    corsPreflight: {
+      allowOrigins: ["http://localhost:3000", "https://client.aax-rss.net"],
+      allowHeaders: ["Authorization"],
+      allowMethods: [CorsHttpMethod.GET],
+    },
+  });
+
+  // Route53 alias record for the CloudFront distribution
+  new ARecord(stack, "ApiAliasRecord", {
+    recordName: SiteData.apiSubDomain,
+    target: RecordTarget.fromAlias(
+      new ApiGatewayv2DomainProperties(
+        dom.regionalDomainName,
+        dom.regionalHostedZoneId
+      )
+    ),
+    zone,
+  });
+
+  const auth = new HttpJwtAuthorizer(
+    "cog-auth",
+    `https://cognito-idp.${stack.region}.amazonaws.com/${userPool.userPoolId}`,
+    {
+      jwtAudience: [cogClient.userPoolClientId],
+    }
+  );
 
   const preSigned = new NodejsFunction(stack, "get-signed-url", {
     memorySize: Size.mebibytes(256).toMebibytes(),
@@ -137,67 +175,110 @@ export function staticWeb(
       S3_BUCKET: inBucket.bucketName,
     },
   });
-  const dom = new CfnDomainName(stack, "custom-dom", {
-    domainName: `${SiteData.apiSubDomain}.${SiteData.domainName}`,
-    domainNameConfigurations: [{ certificateArn: wild.certificateArn }],
+
+  const splitInt = new HttpLambdaIntegration("split-api-gw", preSigned, {
+    payloadFormatVersion: PayloadFormatVersion.VERSION_2_0,
   });
 
-  const httpApi = new CfnApi(stack, "HttpApi", {
-    name: "clientApi",
-    protocolType: "HTTP",
+  httpApi.addRoutes({
+    path: "/get-signed",
+    integration: splitInt,
+    authorizer: auth,
+    methods: [HttpMethod.GET],
   });
 
-  const stage = new CfnStage(stack, "deploy-stage", {
-    stageName: "deploy",
-    apiId: httpApi.attrApiId,
-    autoDeploy: true,
-  });
-  const mapping = new CfnApiMapping(stack, "dom-mapping", {
-    domainName: dom.domainName,
-    apiId: httpApi.attrApiId,
-    stage: stage.stageName,
-  });
-
-  mapping.addDependency(dom);
-
-  // Route53 alias record for the CloudFront distribution
-  const rec = new ARecord(stack, "ApiAliasRecord", {
-    recordName: SiteData.apiSubDomain,
-    target: RecordTarget.fromAlias(
-      new ApiGatewayv2DomainProperties(
-        dom.attrRegionalDomainName,
-        dom.attrRegionalHostedZoneId
-      )
-    ),
-    zone,
-  });
-
-  rec.node.addDependency(mapping);
-
-  const auth = new CfnAuthorizer(stack, "cog-auth", {
-    apiId: httpApi.attrApiId,
-    authorizerType: "JWT",
-    name: "cog-auth",
-    identitySource: ["$request.header.Authorization"],
-    jwtConfiguration: {
-      audience: [cogClient.userPoolClientId],
-      issuer: `https://cognito-idp.${stack.region}.amazonaws.com/${userPool.userPoolId}`,
+  const getUserBooks = new NodejsFunction(stack, "get-user-files", {
+    memorySize: Size.mebibytes(256).toMebibytes(),
+    timeout: Duration.seconds(15),
+    role: lambdaRole,
+    reservedConcurrentExecutions: 1,
+    runtime: lambda.Runtime.NODEJS_18_X,
+    handler: "handler",
+    entry: path.join(__dirname, `/../src/get-user-books.ts`),
+    bundling: {
+      minify: true,
+      externalModules: ["aws-sdk"],
+    },
+    environment: {
+      USER_DYNAMO: usersTable.tableName,
     },
   });
 
-  const splitInt = new CfnIntegration(stack, "split-api-gw", {
-    apiId: httpApi.attrApiId,
-    integrationType: "AWS_PROXY",
-    payloadFormatVersion: "2.0",
-    integrationMethod: "POST",
-    integrationUri: preSigned.functionArn,
-    timeoutInMillis: 4000,
+  const getUserBooksInt = new HttpLambdaIntegration(
+    "get-user-files",
+    getUserBooks,
+    {
+      payloadFormatVersion: PayloadFormatVersion.VERSION_2_0,
+    }
+  );
+
+  httpApi.addRoutes({
+    path: "/{user}/books",
+    integration: getUserBooksInt,
+    authorizer: auth,
+    methods: [HttpMethod.GET],
   });
-  const route = new CfnRoute(stack, "split-api-route", {
-    apiId: httpApi.attrApiId,
-    routeKey: "GET /get-signed",
-    authorizerId: auth.attrAuthorizerId,
-    authorizationType: "JWT",
-    target: `integrations/${splitInt.ref}`,
+  const getFiles = new NodejsFunction(stack, "get-files", {
+    memorySize: Size.mebibytes(256).toMebibytes(),
+    timeout: Duration.seconds(15),
+    role: lambdaRole,
+    reservedConcurrentExecutions: 1,
+    runtime: lambda.Runtime.NODEJS_18_X,
+    handler: "handler",
+    entry: path.join(__dirname, `/../src/get-files.ts`),
+    bundling: {
+      minify: true,
+      externalModules: ["aws-sdk"],
+    },
+    environment: {
+      DYNAMO_NAME: booksTable.tableName,
+    },
   });
+
+  const filesInt = new HttpLambdaIntegration("get-file", getFiles, {
+    payloadFormatVersion: PayloadFormatVersion.VERSION_2_0,
+  });
+
+  httpApi.addRoutes({
+    path: "/files",
+    integration: filesInt,
+    authorizer: auth,
+    methods: [HttpMethod.GET],
+  });
+
+  const getFile = new NodejsFunction(stack, "get-file", {
+    memorySize: Size.mebibytes(256).toMebibytes(),
+    timeout: Duration.seconds(15),
+    role: lambdaRole,
+    reservedConcurrentExecutions: 1,
+    runtime: lambda.Runtime.NODEJS_18_X,
+    handler: "handler",
+    entry: path.join(__dirname, `/../src/get-file.ts`),
+    bundling: {
+      minify: true,
+      externalModules: ["aws-sdk"],
+    },
+    environment: {
+      DYNAMO_NAME: booksTable.tableName,
+    },
+  });
+
+  const fileInt = new HttpLambdaIntegration("get-file", getFile, {
+    payloadFormatVersion: PayloadFormatVersion.VERSION_2_0,
+  });
+
+  httpApi.addRoutes({
+    path: "/file/{dir}/{file}",
+    integration: fileInt,
+    authorizer: auth,
+    methods: [HttpMethod.GET],
+  });
+  httpApi.addRoutes({
+    path: "/file/{dir}",
+    integration: fileInt,
+    authorizer: auth,
+    methods: [HttpMethod.GET],
+  });
+
+  return { httpApi };
 }

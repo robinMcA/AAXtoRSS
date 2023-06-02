@@ -9,10 +9,37 @@ import { s3Sub } from "./s3";
 import { dynamoSub } from "./dynamo";
 import { staticWeb } from "./web";
 import { cognito } from "./cognito";
+import { HostedZone } from "aws-cdk-lib/aws-route53";
+import {
+  Certificate,
+  CertificateValidation,
+} from "aws-cdk-lib/aws-certificatemanager";
+import { createRss } from "./create-rss";
+
+export const SiteData = {
+  domainName: process.env.DOMAIN_NAME || "aax-rss.net",
+  siteSubDomain: process.env.SUB_DOMAIN || "client",
+  apiSubDomain: process.env.API_DOMAIN || "api",
+  rssSubDomain: process.env.RSS_DOMAIN || "rss",
+};
+export const siteDomain = SiteData.siteSubDomain + "." + SiteData.domainName;
+export const rssDomain = SiteData.rssSubDomain + "." + SiteData.domainName;
 
 export class AaxMp3RssStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
+    // const zone = HostedZone.fromLookup(this, "zone", {
+    //   domainName: SiteData.domainName,
+    // });
+    const zone = HostedZone.fromHostedZoneAttributes(this, "zoneid", {
+      zoneName: "aax-rss.net",
+      hostedZoneId: "Z0734245FFQJ3ASTK3JO",
+    });
+    // TLS certificate
+    const wild = new Certificate(this, "WildCertificate", {
+      domainName: "*." + SiteData.domainName,
+      validation: CertificateValidation.fromDns(zone),
+    });
 
     const { aaxBucket, outBucket } = s3Sub(this);
 
@@ -35,6 +62,23 @@ export class AaxMp3RssStack extends Stack {
       outBucket,
     });
     const { cognito: userPool, client: cogClient } = cognito(this);
-    staticWeb(this, lambdaRole, { inBucket: aaxBucket, userPool, cogClient });
+    const { httpApi } = staticWeb(this, lambdaRole, {
+      inBucket: aaxBucket,
+      userPool,
+      cogClient,
+      usersTable,
+      booksTable: table,
+      zone,
+      wild,
+    });
+
+    createRss(this, {
+      booksTable: table,
+      zone,
+      wild,
+      role: lambdaRole,
+      httpApi,
+      outBucket,
+    });
   }
 }

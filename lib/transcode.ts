@@ -47,9 +47,14 @@ export function transcodeSub(
   newAax.addSubscription(transcodeSub);
 
   aaxBucket.addEventNotification(
-    EventType.OBJECT_CREATED_COMPLETE_MULTIPART_UPLOAD,
+    EventType.OBJECT_CREATED,
     new SnsDestination(newAax),
     { suffix: ".aax" }
+  );
+  aaxBucket.addEventNotification(
+    EventType.OBJECT_CREATED,
+    new SnsDestination(newAax),
+    { suffix: ".AAX" }
   );
 
   const transcode = new NodejsFunction(stack, "transcode", {

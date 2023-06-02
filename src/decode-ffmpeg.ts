@@ -1,28 +1,20 @@
 import { exec as rawExec } from "child_process";
 import { S3CreateEvent, SQSHandler } from "aws-lambda";
-import { S3 } from "@aws-sdk/client-s3";
 import { inspect, promisify } from "util";
 import { readFile, writeFile } from "fs/promises";
 import { PutObjectCommandInput } from "@aws-sdk/client-s3/dist-types/commands/PutObjectCommand";
 import { ProbeChapter, ProbeOut } from "./types";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { v4 } from "uuid";
-import {
-  DynamoDBDocumentClient,
-  PutCommand,
-  ScanCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import chunk from "lodash.chunk";
 import { SendMessageBatchRequestEntry } from "@aws-sdk/client-sqs/dist-types/models/models_0";
+import { ddbDocClient } from "./utils/dynamoClient";
+import { s3 } from "./utils/s3Client";
+import { sqsClient } from "./utils/sqsClient";
 
 const exec = promisify(rawExec);
 const outBucket = process.env.OUT_BUCKET || "out";
-
-const s3 = new S3({ region: process.env.AWS_REGION });
-
-const sqsClient = new SQSClient({ region: process.env.AWS_REGION });
 
 const sendToQueueInChunks =
   (client: SQSClient) =>
@@ -47,27 +39,6 @@ const sendToQueueInChunks =
       }, Promise.resolve());
   };
 
-const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
-
-const marshallOptions = {
-  // Whether to automatically convert empty strings, blobs, and sets to `null`.
-  convertEmptyValues: false, // false, by default.
-  // Whether to remove undefined values while marshalling.
-  removeUndefinedValues: true, // false, by default.
-  // Whether to convert typeof object to map attribute.
-  convertClassInstanceToMap: false, // false, by default.
-};
-
-const unmarshallOptions = {
-  // Whether to return numbers as a string instead of converting them to native JavaScript numbers.
-  wrapNumbers: false, // false, by default.
-};
-
-// Create the DynamoDB document client.
-const ddbDocClient = DynamoDBDocumentClient.from(dynamo, {
-  marshallOptions,
-  unmarshallOptions,
-});
 const execFfProbe = async (inPath: string) =>
   exec(
     `/opt/ffprobe -i ${inPath} -print_format json -show_chapters -show_format`
@@ -146,8 +117,10 @@ export const handler: SQSHandler = async (event) => {
 
   const outSrcKey = srcKey.replace(/\s+/g, "_").replace(/[\(\)]/g, "__");
   const outDirS3 =
-    format?.tags?.title?.replace(/\s+/g, "_").replace(/[\(\)]/g, "__") ||
-    outSrcKey;
+    format?.tags?.title
+      ?.replace(/\s+/g, "_")
+      .replace(/[\(\)]/g, "__")
+      .replace(/'/g, "") || outSrcKey;
 
   const outKey = `${encodeURI(outDirS3)}/${outSrcKey}.mp4`;
 
@@ -155,7 +128,7 @@ export const handler: SQSHandler = async (event) => {
     new PutCommand({
       TableName: process.env.DYNAMO_NAME,
       Item: {
-        s3Key: outKey,
+        s3Key: encodeURI(outDirS3),
         chapters,
         format,
         infile: { bucket: srcBucket, key: srcKey },
@@ -169,7 +142,7 @@ export const handler: SQSHandler = async (event) => {
     new UpdateCommand({
       TableName: process.env.USER_DYNAMO,
       UpdateExpression: "ADD Books :b",
-      ExpressionAttributeValues: { ":b": new Set([outSrcKey]) },
+      ExpressionAttributeValues: { ":b": new Set([encodeURI(outDirS3)]) },
       Key: { user },
     })
   );

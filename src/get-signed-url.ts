@@ -1,30 +1,10 @@
-import { S3RequestPresigner } from "@aws-sdk/s3-request-presigner";
-import { Hash } from "@aws-sdk/hash-node";
-import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import { APIGatewayProxyHandlerV2WithJWTAuthorizer } from "aws-lambda";
-import { parseUrl } from "@aws-sdk/url-parser";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import { s3 } from "./utils/s3Client";
 
-import { HttpRequest } from "@aws-sdk/protocol-http";
+const Bucket = process.env.S3_BUCKET ?? "test";
 
-const credentials = fromNodeProviderChain();
-
-const presigner = new S3RequestPresigner({
-  credentials: credentials,
-  region: process.env.AWS_REGION ?? "us-east-1",
-  service: "",
-  sha256: Hash.bind(null, "sha256"),
-  uriEscapePath: true,
-});
-
-const createPreSignedLink = async (key: string, user: string) => {
-  const s3ObjectUrl = parseUrl(
-    `https://${process.env.S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${user}/${key}`
-  );
-
-  return presigner.presign(new HttpRequest({ ...s3ObjectUrl, method: "PUT" }));
-};
-
-const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async ({
+export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async ({
   queryStringParameters,
   requestContext,
 }) => {
@@ -37,9 +17,18 @@ const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async ({
   if (key === undefined) {
     return { statusCode: 500 };
   }
-  const folderPath = requestContext.authorizer.principalId;
 
-  return { link: createPreSignedLink(key, folderPath) };
+  const folderPath = requestContext.authorizer.jwt.claims["username"] as string;
+
+  const Key = `${folderPath}/${key}`;
+
+  const { url, fields } = await createPresignedPost(s3, {
+    Bucket,
+    Key,
+    Expires: 900, //Seconds before the presigned post expires. 3600 by default.
+  });
+
+  return { url, fields };
 };
 
 export default handler;

@@ -1,36 +1,16 @@
 import { exec as rawExec } from "child_process";
 import { SQSHandler } from "aws-lambda";
-import * as AWS from "@aws-sdk/client-s3";
 import { promisify } from "util";
-import { mkdir, readFile, rm, writeFile, readdir } from "fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { PutObjectCommandInput } from "@aws-sdk/client-s3/dist-types/commands/PutObjectCommand";
 import { SplitMessage } from "./types";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { ddbDocClient } from "./utils/dynamoClient";
+import { s3 } from "./utils/s3Client";
 
 const exec = promisify(rawExec);
 const outBucket = process.env.OUT_BUCKET || "out";
-
-const s3 = new AWS.S3({ region: process.env.AWS_REGION });
-
-const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION });
-
-const marshallOptions = {
-  convertEmptyValues: false, // false, by default.
-  removeUndefinedValues: true, // false, by default.
-  convertClassInstanceToMap: false, // false, by default.
-};
-
-const unmarshallOptions = {
-  wrapNumbers: false, // false, by default.
-};
-
-// Create the DynamoDB document client.
-const ddbDocClient = DynamoDBDocumentClient.from(dynamo, {
-  marshallOptions,
-  unmarshallOptions,
-});
 
 const execFfmpecClip = (
   infile: string,
